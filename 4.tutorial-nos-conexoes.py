@@ -189,4 +189,4 @@ print("Posição 1 da memória de Alice e Posição 0 da memória de Bob:")
 print(qA, qB)
 fidelidade = ns.qubits.fidelity([qA, qB], ns.b00)
 print(f"Fidelidade de emaranhamento (após espera de 5ns) = {fidelidade:.3f}")
-    
+print(estatisticas)    
