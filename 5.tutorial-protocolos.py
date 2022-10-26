@@ -135,3 +135,143 @@ print(estatisticas)
 protocolo_ping.reset()
 estatisticas = ns.sim_run(duration=51)
 print(estatisticas)
+
+## O exemplo do teleporte usando protocolos
+
+# Agora, podemos configurar nosso exemplo do teleporte utilizando protocolos. Alice terá um
+# protocolo para criar um estado quântico que deseja teleportar. Por ora, este protocolo não
+# precisa produzir nada, irá criar um estado aleatório. Quando o qubit é criado, o protocolo
+# sinaliza ao mundo que obteve sucesso e em qual posição da memória o qubit está localizado.
+
+# Você pode pensar que Alice poderia simplesmente enviar um sinal com os resultados das medições,
+# ao qual Bob poderia estar ouvindo. No entanto, isto quebraria a localidade; a mensagem seria
+# enviada mais rápido que a luz para Bob. Para evitar esta possibilidade, um protocolo de nó
+# (NodeProtocol) pode ser usaddo. Tal protocolo possui acesso a um único nó, e também garante
+# que protocolos só podem sinalizar a outros protocolos naquele nó, isto é, na mesma localização.
+# Se um protocolo deveria ter acesso a um conjunto limitado de nós, um protocolo local
+# (LocalProtocol) pode ser usado, ou um protocolo normal (?) se a localidade não for um problema.
+
+from netsquid.protocols import NodeProtocol, Signals
+
+class ProtocoloEstadoInicial(NodeProtocol):
+    def run(self):
+        qubit, = qapi.create_qubits(1)
+        pos_mem = self.node.qmemory.unused_positions[0]
+        self.node.qmemory.put(qubit, pos_mem)
+        self.node.qmemory.operate(ns.H, pos_mem)
+        self.node.qmemory.operate(ns.S, pos_mem)
+        self.send_signal(signal_label=Signals.SUCCESS, result=pos_mem)
+
+# Agora Alice precisa de um protocolo para realizar sua medição de Bell. Antes que ela possa
+# fazer a medição tanto o qubit que ela quer teleportar como o qubit que está emaranhado com Bob
+# precisa estar na sua memória, assim, Alice precisa esperar por ambos. Em princípio, os qubits
+# podem chegar em qualquer ordem, portanto, Alice precisa esperar pelos dois simultaneamente.
+# Isso pode ser feito combinando as expressões de evento com o operador & (AND):
+
+# expressao_and = yield expressao1 & expressao2
+
+# Alternativamente, o operador | (OR) espera até que uma expressão seja verdadeira:
+
+# expressao_or = yield expressao3 | expressao4 
+
+# A expressão de evento retornada é uma cópia da expressão de evento que foi produzida. Esta cópia
+# possui informação acerca de qual expressão foi provocada. Por exemplo...
+# expressao_or.first_term.value -> é verdadeiro se expressao3 foi provocada
+# expressao_or.second_term.value -> é verdadeiro se expressao4 foi provocada
+# Para ver uma lista de eventos que causaram a expressão a ser provocada:
+# expressao.or.triggered_events
+
+# Alice espera por um sinal de ProtocoloEstadoInicial (isto é, seu qubit sendo preparado) e até que
+# o qubit emaranhado chegue na sua memória. Uma vez que ambos ocorram, ela pode realizar a medição
+# e enviar os resultados para Bob.
+
+from pydynaa import EventExpression
+
+class ProtocoloMedicaoBell(NodeProtocol):
+    def __init__(self, no, protocolo_qubit):
+        super().__init__(no)
+        self.add_subprotocol(protocolo_qubit, 'protocoloq')
+
+    def run(self):
+        qubit_inicializado = False
+        emaranhamento_pronto = False
+        while True:
+            exprev_sinal = self.await_signal(
+                    sender=self.subprotocols['protocoloq'],
+                    signal_label=Signals.SUCCESS)
+            exprev_porta = self.await_port_input(self.node.ports["qin_charlie"])
+            expressao = yield exprev_sinal | exprev_porta
+            if expressao.first_term.value:
+                # Primeira expressão foi provocada
+                qubit_inicializado = True
+            else:
+                # Segunda expressão foi provocada
+                emaranhamento_pronto = True
+            if qubit_inicializado and emaranhamento_pronto:
+                # Realiza a medição de Bell
+                self.no.qmemory.operate(ns.CNOT, [0, 1])
+                self.no.qmemory.operate(ns.H, 0)
+                m, _ = self.no.qmemory.measure([0, 1])
+                # Envia os resultados para Bob
+                self.no.ports["cout_bob"].tx_output(m)
+                self.send_signal(Signals.SUCCESS)
+                print(f"{ns.sim_time():.1f}: Alice recebeu o qubit emaranhado, "
+                      f"mediu os qubits e está enviando correções")
+                break
+
+    def start(self):
+        super().start()
+        self.start_subprotocols()
+
+# Bob precisa realizar as correções no qubit que recebeu da fonte. Então, Bob também precisa
+# esperar duas coisas ocorrerem: os dados clássicos chegarem de Alice e o qubit emaranhado que
+# é colocado na memória de Bob.
+
+class ProtocoloCorrecao(NodeProtocol):
+
+    def __init__(self, no):
+        super().__init__(no)
+
+    def run(self):
+        porta_alice = self.no.ports["cin_alice"]
+        porta_charlie = self.no.ports["qin_charlie"]
+        emaranhamento_pronto = False
+        resultados_medicao = False
+        while True:
+            exprev_porta_a = self.await_port_input(porta_alice)
+            exprev_porta_c = self.await_port_input(porta_charlie)
+            expressao = yield exprev_porta_a | exprev_porta_c
+            if expressao.first_term.value:
+                resultados_medicao = True
+            else:
+                emaranhamento_pronto = True
+            if resultados_medicao is not None and emaranhamento_pronto:
+                if resultados_medicao[0]:
+                    self.no.qmemory.operate(ns.Z, 0)
+                if resultados_medicao[1]:
+                    self.no.qmemory.operate(ns.X, 0)
+                self.send_signal(Signals.SUCCESS, 0)
+                fidelidade = ns.qubits.fidelity(self.no.qmemory.peek(0)[0],
+                                                ns.y0, squared=True)
+                print(f"{ns.sim_time():.1f}: Bob recebeu o qubit emaranhado e "
+                      f"correções! Fidelidade = {fidelidade:.3f}")
+                break
+
+# Para finalizar, nós construímos uma rede exemplo da seção anterior, atribuímos os protocolos
+# e rodamos a simulação. Agora, example_network_setup retorna uma rede ao invés de nós e
+# conexões. Esta é uma classe conveniente (Network) que guarda todos os nós e conexões de uma rede.
+
+from netsquid.examples.teleportation import example_network_setup
+ns.sim_reset()
+ns.set_qstate_formalism(ns.QFormalism.DM)
+ns.set_random_state(seed=42)
+rede = example_network_setup()
+alice = rede.get_node("Alice")
+bob = rede.get_node("Bob")
+protocolo_estado_aleatorio = ProtocoloEstadoInicial(alice)
+protocolo_medicao_bell = ProtocoloMedicaoBell(alice, protocolo_estado_aleatorio)
+protocolo_correcao = ProtocoloCorrecao(bob)
+protocolo_medicao_bell.start()
+protocolo_correcao.start()
+estatisticas = ns.sim_run(100)
+print(estatisticas)
