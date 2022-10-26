@@ -32,11 +32,13 @@
 import netsquid as ns
 from netsquid.protocols import Protocol
 
+
 class ProtocoloEspera(Protocol):
     def run(self):
         print(f"Iniciando protocolo em {ns.sim_time()}")
         yield self.await_timer(100)
         print(f"Finalizando protocolo em {ns.sim_time()}")
+
 
 print("Iniciando simulação e protocolo...")
 ns.sim_reset()
@@ -60,12 +62,13 @@ from netsquid.components import QuantumChannel
 from netsquid.nodes import Node, DirectConnection
 from netsquid.qubits import qubitapi as qapi
 
+
 class ProtocoloPing(NodeProtocol):
     def run(self):
         print(f"Iniciando ping em t={ns.sim_time()}")
         porta = self.node.ports["porta_para_canal"]
         qubit, = qapi.create_qubits(1)
-        porta.tx_output(qubit) # Envia o qubit para Pong
+        porta.tx_output(qubit)  # Envia o qubit para Pong
         while True:
             # Espera o recebimento do qubit de volta
             yield self.await_port_input(porta)
@@ -74,7 +77,8 @@ class ProtocoloPing(NodeProtocol):
             labels_z = ("|0>", "|1>")
             print(f"{ns.sim_time()}: Evento pong! {self.node.name} mediu "
                   f"{labels_z[m]} com probabilidade {prob:.2f}")
-            porta.tx_output(qubit) # Envia qubit para B
+            porta.tx_output(qubit)  # Envia qubit para B
+
 
 class ProtocoloPong(NodeProtocol):
     def run(self):
@@ -87,7 +91,8 @@ class ProtocoloPong(NodeProtocol):
             labels_x = ("|+>", "|->")
             print(f"{ns.sim_time()}: Evento ping! {self.node.name} mediu "
                   f"{labels_x[m]} com probabilidade {prob:.2f}")
-            porta.tx_output(qubit) # envia qubit para Ping
+            porta.tx_output(qubit)  # envia qubit para Ping
+
 
 # Podemos rodar esses dois protocolos nos nós das nossas entidades Ping e Pong. Para isso,
 # conectamos os dois por meio de uma conexão direta e atribuímos a eles seus protocolos.
@@ -153,6 +158,7 @@ print(estatisticas)
 
 from netsquid.protocols import NodeProtocol, Signals
 
+
 class ProtocoloEstadoInicial(NodeProtocol):
     def run(self):
         qubit, = qapi.create_qubits(1)
@@ -161,6 +167,7 @@ class ProtocoloEstadoInicial(NodeProtocol):
         self.node.qmemory.operate(ns.H, pos_mem)
         self.node.qmemory.operate(ns.S, pos_mem)
         self.send_signal(signal_label=Signals.SUCCESS, result=pos_mem)
+
 
 # Agora Alice precisa de um protocolo para realizar sua medição de Bell. Antes que ela possa
 # fazer a medição tanto o qubit que ela quer teleportar como o qubit que está emaranhado com Bob
@@ -187,9 +194,10 @@ class ProtocoloEstadoInicial(NodeProtocol):
 
 from pydynaa import EventExpression
 
+
 class ProtocoloMedicaoBell(NodeProtocol):
-    def __init__(self, no, protocolo_qubit):
-        super().__init__(no)
+    def __init__(self, node, protocolo_qubit):
+        super().__init__(node)
         self.add_subprotocol(protocolo_qubit, 'protocoloq')
 
     def run(self):
@@ -197,8 +205,8 @@ class ProtocoloMedicaoBell(NodeProtocol):
         emaranhamento_pronto = False
         while True:
             exprev_sinal = self.await_signal(
-                    sender=self.subprotocols['protocoloq'],
-                    signal_label=Signals.SUCCESS)
+                sender=self.subprotocols['protocoloq'],
+                signal_label=Signals.SUCCESS)
             exprev_porta = self.await_port_input(self.node.ports["qin_charlie"])
             expressao = yield exprev_sinal | exprev_porta
             if expressao.first_term.value:
@@ -209,11 +217,11 @@ class ProtocoloMedicaoBell(NodeProtocol):
                 emaranhamento_pronto = True
             if qubit_inicializado and emaranhamento_pronto:
                 # Realiza a medição de Bell
-                self.no.qmemory.operate(ns.CNOT, [0, 1])
-                self.no.qmemory.operate(ns.H, 0)
-                m, _ = self.no.qmemory.measure([0, 1])
+                self.node.qmemory.operate(ns.CNOT, [0, 1])
+                self.node.qmemory.operate(ns.H, 0)
+                m, _ = self.node.qmemory.measure([0, 1])
                 # Envia os resultados para Bob
-                self.no.ports["cout_bob"].tx_output(m)
+                self.node.ports["cout_bob"].tx_output(m)
                 self.send_signal(Signals.SUCCESS)
                 print(f"{ns.sim_time():.1f}: Alice recebeu o qubit emaranhado, "
                       f"mediu os qubits e está enviando correções")
@@ -223,45 +231,48 @@ class ProtocoloMedicaoBell(NodeProtocol):
         super().start()
         self.start_subprotocols()
 
+
 # Bob precisa realizar as correções no qubit que recebeu da fonte. Então, Bob também precisa
 # esperar duas coisas ocorrerem: os dados clássicos chegarem de Alice e o qubit emaranhado que
 # é colocado na memória de Bob.
 
 class ProtocoloCorrecao(NodeProtocol):
 
-    def __init__(self, no):
-        super().__init__(no)
+    def __init__(self, node):
+        super().__init__(node)
 
     def run(self):
-        porta_alice = self.no.ports["cin_alice"]
-        porta_charlie = self.no.ports["qin_charlie"]
+        porta_alice = self.node.ports["cin_alice"]
+        porta_charlie = self.node.ports["qin_charlie"]
         emaranhamento_pronto = False
-        resultados_medicao = False
+        resultados_medicao = None
         while True:
             exprev_porta_a = self.await_port_input(porta_alice)
             exprev_porta_c = self.await_port_input(porta_charlie)
             expressao = yield exprev_porta_a | exprev_porta_c
             if expressao.first_term.value:
-                resultados_medicao = True
+                resultados_medicao = porta_alice.rx_input().items
             else:
                 emaranhamento_pronto = True
             if resultados_medicao is not None and emaranhamento_pronto:
                 if resultados_medicao[0]:
-                    self.no.qmemory.operate(ns.Z, 0)
+                    self.node.qmemory.operate(ns.Z, 0)
                 if resultados_medicao[1]:
-                    self.no.qmemory.operate(ns.X, 0)
+                    self.node.qmemory.operate(ns.X, 0)
                 self.send_signal(Signals.SUCCESS, 0)
-                fidelidade = ns.qubits.fidelity(self.no.qmemory.peek(0)[0],
+                fidelidade = ns.qubits.fidelity(self.node.qmemory.peek(0)[0],
                                                 ns.y0, squared=True)
                 print(f"{ns.sim_time():.1f}: Bob recebeu o qubit emaranhado e "
                       f"correções! Fidelidade = {fidelidade:.3f}")
                 break
+
 
 # Para finalizar, nós construímos uma rede exemplo da seção anterior, atribuímos os protocolos
 # e rodamos a simulação. Agora, example_network_setup retorna uma rede ao invés de nós e
 # conexões. Esta é uma classe conveniente (Network) que guarda todos os nós e conexões de uma rede.
 
 from netsquid.examples.teleportation import example_network_setup
+
 ns.sim_reset()
 ns.set_qstate_formalism(ns.QFormalism.DM)
 ns.set_random_state(seed=42)
@@ -275,3 +286,15 @@ protocolo_medicao_bell.start()
 protocolo_correcao.start()
 estatisticas = ns.sim_run(100)
 print(estatisticas)
+
+# A fidelidade caiu de 0.909 para 0.870 porque o qubit preparado agora fica esperando na memória
+# quântica até que o qubit emaranhado chegue para que a medição de Bell seja realizada.
+
+## Ver também
+# Métodos auxiliares da base classe protocolo:
+#   await_timer() -> inicia um timer e retorna uma EventExpression que é desencadeada após o
+#                    valor definido
+#   await_signal() -> espera um sinal de outro protocolo. LocalProtocols e NodeProtocols só podem
+#                     receber sinais de outros protocolos locais
+#   await_port_input() -> espera até que uma mensagem chegue na entrada de porta
+#   await_port_output() -> espera até que uma mensagem chegue na saída de porta
