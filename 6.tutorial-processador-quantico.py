@@ -127,5 +127,172 @@ print(ns.sim_time())
 # irá gerar um erro indicando que o processador ainda está ocupado.
 
 # Para evitar ter que chamar ns.sim_run() entre cada instrução, utilizamos programas quânticos
-# para aplicar instruções sequencialmente, e até condicionalmente dependendo ddo resultado de
+# para aplicar instruções sequencialmente, e até condicionalmente dependendo do resultado de
 # instruções anteriores.
+
+## Programas quânticos
+
+# Processadores quânticos podem executar programas quânticos (QuantumProgram). Tais programas
+# consistem de instruções que rodam em sequências. As instruções, por padrão, rodam em paralelo
+# se o processador quântico e as instruções físicas suportam isto. Além do mais, um programa 
+# também suporta lógica de controle. Similar à instruções, um programa é independente ao tipo de 
+# processador quântico no qual está rodando. Os índices de qubits referidos em um programa são
+# mapeados para as posições da memória em um PQ quando o programa é executado, o qual também 
+# mapeia as instruções abstratas paraa as instruções físicas disponíveis. 
+
+# Por exemplo, em sua forma mais básica, um programa pode ser criado como uma sequência de
+# instruções:
+
+from netsquid.components.qprogram import QuantumProgram
+
+prog = QuantumProgram(num_qubits=2)
+q1, q2 = prog.get_qubit_indices(2) # Pega os índices dos qubits que iremos trabalhar
+prog.apply(instr.INSTR_INIT, [q1, q2])
+prog.apply(instr.INSTR_H, q1)
+prog.apply(instr.INSTR_CNOT, [q1, q2])
+prog.apply(instr.INSTR_MEASURE, q1, output_key="m1")
+prog.apply(instr.INSTR_MEASURE, q2, output_key="m2")
+
+# Agora, pode ser executado no processador (usando o mesmo processador ruidoso criado acima):
+
+procq_ruidoso.reset()
+ns.sim_reset()
+procq_ruidoso.execute_program(prog, qubit_mapping = [2, 1])
+ns.sim_run()
+print(f'Tempo: {ns.sim_time()}')
+print('As duas medições foram iguais?')
+print(prog.output['m1'] == prog.output['m2'])
+print('Medições:')
+print(prog.output["m1"], prog.output["m2"])
+
+# Tal sequência de instruções também pode ser criada usando uma subclasse de QuantumProgram:
+
+class ProgramaEmaranhar(QuantumProgram):
+    num_qubits_padrao = 2
+    # Necessariamente deve ser chamado program
+    def program(self):
+        q1, q2 = self.get_qubit_indices(2)
+        self.apply(instr.INSTR_INIT, [q1, q2])
+        self.apply(instr.INSTR_H, q1)
+        self.apply(instr.INSTR_CNOT, [q1, q2])
+        self.apply(instr.INSTR_MEASURE, q1, output_key="m1")
+        self.apply(instr.INSTR_MEASURE, q2, output_key="m2")
+        yield self.run()
+
+# Este programa pode ser executado em múltiplos processadores, desde que suportem as instruções.
+# Dependendo do processador, o tempo e ruído aplicados podem ser diferentes.
+
+# Múltiplicas sequências são definidas usando repetidas declarações yield chamando o método run().
+# Durante o run(), as instruções guardam suas saídas em um dicionário chamado output (saída). Por
+# exemplo, aqui, os resultados das medições são armazenados em output['m1'] e output['m2'].
+# A lógica de controle pode ser usada para selecionar quais instruções serão chamadas.
+
+class ProgramaQControlado(QuantumProgram):
+    num_qubits_padrao = 3
+
+    def program(self):
+        q1, q2, q3 = self.get_qubit_indices(3)
+        self.apply(instr.INSTR_H, q1)
+        self.apply(instr.INSTR_MEASURE, q1, output_key='m1')
+        yield self.run()
+        # Dependendo da saída de q1, ocorre um flip em q2 ou em q3
+        if self.output['m1'][0] == 0:
+            self.apply(instr.INSTR_X, q2)
+        else:
+            self.apply(instr.INSTR_X, q3)
+        self.apply(instr.INSTR_MEASURE, q2, output_key='m2')
+        self.apply(instr.INSTR_MEASURE, q3, output_key='m3')
+        yield self.run(parallel=False)
+
+# O parâmetro parallel no método run() pode ser usado para controlar se o processador irá tentar
+# rodar as sequências em paralelo. Para fazer isso, tanto as PhysicalInstruction correspondentes
+# e o processador devem suportar isto.
+
+## Exemplo de teleporte local usando programas
+
+# Vamos usar programa para realizar um teleporte local entre os qubits em um único processador
+# quântico com instruções físicas imperfeitas, i.e., teleportar o estado de um qubit na posição 0
+# da memória para a posição 2.
+
+# Primeiro, os qubits 1 e 2 precisam ser emaranhados. Isto é feito em paralelo à criação do estado
+# a ser teleportado. Uma medição de Bell é realizada no qubit 0 e 1 assim que os 3 qubits estão
+# prontos. Os resultados da medição precisam ser conhecidos antes da realização das operações de
+# correção. Assim, o programa precisa rodar antes da correção ser realizada.
+
+procq_ruidoso.reset()
+ns.sim_reset()
+ns.set_qstate_formalism(ns.QFormalism.DM)
+
+class ProgramaTeleporte(QuantumProgram):
+    num_qubits_padrao = 3
+
+    def program(self):
+        q0, q1, q2 = self.get_qubit_indices(3)
+        # Emaranha q1 e q2:
+        self.apply(instr.INSTR_INIT, [q0, q1, q2])
+        self.apply(instr.INSTR_H, q2)
+        self.apply(instr.INSTR_CNOT, [q2, q1])
+        # Coloca q0 no estado desejado para ser teleportado:
+        self.apply(instr.INSTR_H, q0)
+        self.apply(instr.INSTR_S, q0)
+        # Medição de Bell:
+        self.apply(instr.INSTR_CNOT, [q0, q1])
+        self.apply(instr.INSTR_H, q0)
+        self.apply(instr.INSTR_MEASURE, q0, output_key="M1")
+        self.apply(instr.INSTR_MEASURE, q1, output_key="M2")
+        yield self.run()
+        # Aplica correções:
+        if self.output["M2"][0] == 1:
+            self.apply(instr.INSTR_X, q2)
+        if self.output["M1"][0] == 1:
+            self.apply(instr.INSTR_Z, q2)
+        yield self.run()
+
+procq_ruidoso.execute_program(ProgramaTeleporte())
+ns.sim_run()
+qubit = procq_ruidoso.pop(2)
+print(qubit)
+fidelidade = ns.qubits.fidelity(
+        qubit, ns.qubits.outerprod((ns.S*ns.H*ns.s0).arr), squared=True)
+print(f"Fidelidade: {fidelidade:.3f}")
+
+## Características adicionais
+
+# O parâmetro physical (físico) pode ser usado para indicar se um processador quântico deve
+# corresponder a instrução a uma PhysicalInstruction ou executá-la instantaneamente sem ruído, i.e.,
+# não físico.
+
+class ProgramaQCheating(QuantumProgram):
+    num_qubits_padrao = 2
+
+    def program(self):
+        q1, q2 = self.get_qubit_indices(2)
+        self.apply(instr.INSTR_X, q1)
+        self.apply(instr.INSTR_SIGNAL, physical=False)
+        self.apply(instr.INSTR_Z, q1, physical=False)
+        self.apply(instr.INSTR_CNOT, [q1, q2])
+        self.apply(instr.INSTR_MEASURE, q1, output_key="m1", physical=False)
+        self.apply(instr.INSTR_MEASURE, q2, output_key="m2", physical=False)
+        yield self.run()
+
+# Um programa também pode carregar em outro programa usando o método load(). Programas carregados
+# compartilham o mesmo dicionário de saída.
+
+class ProgramaQCarregando(QuantumProgram):
+    num_qubits_padrao = 2
+
+    def program(self):
+        # Roda uma sequência comum
+        q1, q2 = self.get_qubit_indices(2)
+        self.apply(instr.INSTR_X, q1)
+        yield self.run()
+        # Carrega e roda outro programa
+        yield from self.load(ProgramaQCheating)
+
+# Além disso, programas podem ser concatenados com o operador de adição:
+# prog3 = prog1 + prog2
+# E ainda, programas podem ser repetidos usando o operador de multiplicação:
+# prog2 = prog1 * 5
+# Em todos os casos, o dicionário de saída é compartilhado por todos os programas combinados.
+
+
