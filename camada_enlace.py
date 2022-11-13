@@ -29,7 +29,7 @@ class EGService(ServiceProtocol, metaclass=abc.ABCMeta):
         self.add_signal(self._novo_sinal_req)
         self._id_criacao = 0
 
-    def lida_com_requisicao(self, requisicao, identificador, tempo_inicio=None, **kwargs):
+    def handle_request(self, requisicao, identificador, tempo_inicio=None, **kwargs):
         if tempo_inicio is None:
             tempo_inicio = ns.sim_time()
         self.fila.append((tempo_inicio, (identificador, requisicao, kwargs)))
@@ -70,7 +70,7 @@ class EGP(EGService):
     def adiciona_camada_fisica(self, protocolo_mh):
         self.add_subprotocol(protocolo_mh, name=self._nome_mh)
 
-    def lida_com_requisicao(self, requisicao, identificador, tempo_inicio=None, **kwargs):
+    def handle_request(self, requisicao, identificador, tempo_inicio=None, **kwargs):
         if kwargs.get('id_criacao') is None:
             kwargs['id_criacao'] = self._pega_proximo_id_criacao()
         if tempo_inicio is None:
@@ -78,13 +78,13 @@ class EGP(EGService):
             tempo_inicio = ns.sim_time() + tempo_viagem
             # Assegurar que Message não combine especificando um cabeçalho
             self.porta_c.tx_output(
-                Message([requisicao, identificador, tempo_inicio, kwargs], cabecalho=requisicao)
+                Message([requisicao, identificador, tempo_inicio, kwargs], header=requisicao)
             )
-        return super().lida_com_requisicao(requisicao, identificador, tempo_inicio, **kwargs)
+        return super().handle_request(requisicao, identificador, tempo_inicio, **kwargs)
 
     def _lida_com_msg(self, msg):
         requisicao, id_manipulador, tempo_inicio, kwargs = msg.items
-        self.lida_com_requisicao(requisicao, id_manipulador, tempo_inicio, **kwargs)
+        self.handle_request(requisicao, id_manipulador, tempo_inicio, **kwargs)
 
     def run(self):
         if self._nome_mh not in self.subprotocols or \
@@ -94,7 +94,6 @@ class EGP(EGService):
         yield from super().run()
 
     def criar(self, id_proposito, numero, **kwargs):
-        print(id_proposito, numero)
         id_criacao = kwargs['id_criacao']
         self._id_criacao = id_criacao
         pares_atuais = 0
@@ -190,25 +189,25 @@ class DetectorBSM(QuantumDetector):
                          error_on_fail=erro_na_falha, properties=propriedades)
         self._ids_envio = []
 
-    def preprocessa_entradas(self):
+    def preprocess_inputs(self):
         super().preprocess_inputs()
         for nome_porta, lista_qubit in self._qubits_per_port.items():
             if len(lista_qubit) > 0:
                 self._ids_envio.append(nome_porta[3:])
 
-    def informa(self, resultados_porta):
+    def inform(self, resultados_porta):
         for nome_porta, saidas in resultados_porta.items():
             if len(saidas) == 0:
                 saidas = ['TIMEOUT']
-                cabecalho = 'erro'
+                header = 'erro'
             else:
-                cabecalho = 'photonoutcome'
+                header = 'photonoutcome'
             # Extrai as ids dos nomes das portas (cout...)
             if nome_porta[4:] in self._ids_envio:
-                msg = Message(saidas, header=cabecalho, **self._meta)
+                msg = Message(saidas, header=header, **self._meta)
                 self.ports[nome_porta].tx_output(msg)
 
-    def finaliza(self):
+    def finish(self):
         super().finish()
         self._ids_envio.clear()
 
